@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>双眼检查台 · Stereo Review Station</title>
+<style>
+  :root {
+    --bg: #161a20; --panel: #1f252e; --line: #2e3642;
+    --fg: #d8dee8; --dim: #8a94a3; --accent: #5aa2ff;
+    --ok: #58c08a; --warn: #e8a83c; --bad: #e05a4e;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 13px/1.5 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  header { padding: 10px 16px; border-bottom: 1px solid var(--line); display: flex; gap: 18px; align-items: center; flex-wrap: wrap; }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  .badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; border: 1px solid var(--line); color: var(--dim); }
+  .badge.ok { color: var(--ok); border-color: var(--ok); }
+  .badge.warn { color: var(--warn); border-color: var(--warn); }
+  .badge.bad { color: var(--bad); border-color: var(--bad); }
+  main { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 14px; padding: 14px; }
+  .stage { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
+  .canvas-wrap { display: flex; justify-content: center; background: #0e1116; border-radius: 6px; padding: 8px; }
+  canvas { image-rendering: pixelated; cursor: crosshair; max-width: 100%; }
+  .controls { display: flex; gap: 8px; align-items: center; margin: 10px 0 4px; flex-wrap: wrap; }
+  button, select, input {
+    background: #262d38; color: var(--fg); border: 1px solid var(--line);
+    border-radius: 5px; padding: 5px 10px; font-size: 12px;
+  }
+  button:hover { border-color: var(--accent); }
+  input[type="number"] { width: 86px; }
+  label { color: var(--dim); }
+  .slider { flex: 1; min-width: 160px; }
+  aside { display: flex; flex-direction: column; gap: 12px; max-height: calc(100vh - 110px); overflow: auto; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+  .card h2 { font-size: 12px; margin: 0 0 8px; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; }
+  table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+  th, td { text-align: left; padding: 3px 4px; border-bottom: 1px solid var(--line); }
+  th { color: var(--dim); font-weight: 500; }
+  tr.low { color: var(--warn); }
+  tr.conflict { color: var(--bad); }
+  .kv { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; font-size: 12px; }
+  .kv span:nth-child(odd) { color: var(--dim); }
+  .muted { color: var(--dim); font-size: 11px; }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .seg { border-left: 3px solid var(--line); padding-left: 8px; margin-bottom: 8px; }
+  .seg.accept { border-color: var(--ok); }
+  .seg.reject { border-color: var(--bad); }
+  .seg.unknown { border-color: var(--warn); }
+  .legend span { display: inline-block; margin-right: 10px; }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 3px; }
+  .blank-note { color: var(--warn); font-size: 11px; }
+  #toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+    background: #262d38; border: 1px solid var(--accent); padding: 8px 14px;
+    border-radius: 6px; display: none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>双眼检查台</h1>
+  <span class="badge" id="approvalBadge">校正未拟合</span>
+  <span class="badge" id="reportBadge">报告：未生成</span>
+  <span class="muted" id="shotLabel"></span>
+  <span style="flex:1"></span>
+  <label>显示画幅
+    <select id="aspectMode">
+      <option value="native">原始像素 480×360</option>
+      <option value="wide">宽画幅窗口 640×360（不拉伸，留边）</option>
+      <option value="square">方画幅窗口 360×360</option>
+    </select>
+  </label>
+</header>
+
+<main>
+  <section class="stage">
+    <div class="controls">
+      <button id="prev">◀ 帧</button>
+      <button id="play">▶ 播放</button>
+      <button id="next">帧 ▶</button>
+      <input class="slider" type="range" id="frameSlider" min="0" max="29" value="0">
+      <span id="frameText">0 / 29</span>
+    </div>
+    <div class="controls">
+      <label>视图
+        <select id="viewMode">
+          <option value="side">左右并列</option>
+          <option value="overlay">叠看（滑杆调混合）</option>
+          <option value="left">仅左眼</option>
+          <option value="right">仅右眼</option>
+        </select>
+      </label>
+      <label>混合 <input type="range" id="mix" min="0" max="100" value="50" style="width:110px"></label>
+      <label><input type="checkbox" id="showMasks"> 遮罩（可见性/单眼/重复纹理）</label>
+      <label>遮罩类型
+        <select id="maskKind">
+          <option value="valid">有效区</option>
+          <option value="mono">单眼区域</option>
+          <option value="repeated">重复纹理</option>
+        </select>
+      </label>
+      <button id="autoGrid">整帧自动布点</button>
+    </div>
+    <div class="canvas-wrap">
+      <canvas id="canvas" width="480" height="360"></canvas>
+    </div>
+    <p class="muted" id="hint">在左眼画面上点选疑点；匹配点按状态着色，低置信与冲突点留空标注、不参与拟合，也不会被画成零视差。</p>
+    <div class="legend muted">
+      <span><i class="dot" style="background:#58c08a"></i>可信</span>
+      <span><i class="dot" style="background:#e8a83c"></i>低置信（留空）</span>
+      <span><i class="dot" style="background:#e05a4e"></i>边界/遮挡冲突</span>
+    </div>
+  </section>
+
+  <aside>
+    <div class="card">
+      <h2>本帧点对</h2>
+      <table>
+        <thead><tr><th>#</th><th>左 (x,y)</th><th>右 (x,y)</th><th>dx</th><th>dy</th><th>置信</th><th></th></tr></thead>
+        <tbody id="pointRows"></tbody>
+      </table>
+      <div class="kv" id="frameStats" style="margin-top:8px"></div>
+    </div>
+
+    <div class="card">
+      <h2>垂直校正</h2>
+      <div class="row2">
+        <label>范围<br><select id="scope">
+          <option value="global">全帧共用</option>
+          <option value="per-shot">按镜头拆分</option>
+        </select></label>
+        <label>操作<br><button id="fit">拟合并留出验证</button></label>
+      </div>
+      <div id="fitInfo" style="margin-top:10px"></div>
+      <div class="controls" style="margin-bottom:0">
+        <button id="approve" disabled>批准此校正</button>
+        <button id="revoke" disabled>撤销批准</button>
+      </div>
+      <p class="muted" id="approvalNote">未批准前，报告不会输出水平视差范围或边界冲突图。</p>
+    </div>
+
+    <div class="card">
+      <h2>显示几何与视角</h2>
+      <div class="row2">
+        <label>画面宽 (px)<input type="number" id="dW" placeholder="如 640"></label>
+        <label>画面高 (px)<input type="number" id="dH" placeholder="如 360"></label>
+        <label>屏宽 (mm)<input type="number" id="dMM" placeholder="如 530"></label>
+        <label>观看距离 (mm)<input type="number" id="dDist" placeholder="如 900"></label>
+      </div>
+      <div class="controls" style="margin-bottom:0">
+        <button id="saveDisplay">保存显示参数</button>
+      </div>
+      <p class="muted">仅当提供物理屏宽与观看距离时才换算视角，否则只报像素。调换显示画幅只改屏幕映射，坐标仍按原片像素存储并复算比例。</p>
+    </div>
+
+    <div class="card">
+      <h2>报告（基于实际获准变换重算）</h2>
+      <div class="kv" id="reportStats"><span class="muted">尚未生成</span></div>
+      <div class="controls" style="margin-bottom:0">
+        <button id="buildReport">按获准变换重算报告</button>
+        <button id="openConflict">查看本帧边界冲突图</button>
+        <button id="openDisparity">查看本帧视差图</button>
+      </div>
+    </div>
+  </aside>
+</main>
+<div id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const state = { scene: null, points: [], model: null, approved: null, frame: 0,
+                display: {}, playing: null, shownW: 480, shownH: 360 };
+// Bumped whenever the report is explicitly rebuilt; stale background refreshes
+// carry an older generation and must not overwrite the fresh report panel.
+let reportGeneration = 0;
+// Monotonic token for full refreshes; an async refresh whose token is stale
+// by the time it finishes must not paint over a more recent user action.
+let refreshSeq = 0;
+
+async function api(path, body) {
+  const opt = body ? { method: "POST", headers: { "Content-Type": "application/json" },
+                       body: JSON.stringify(body) } : {};
+  const r = await fetch(path, opt);
+  const data = await r.json();
+  if (data.error) { toast(data.error); throw new Error(data.error); }
+  return data;
+}
+function toast(msg) {
+  const t = $("toast"); t.textContent = msg; t.style.display = "block";
+  clearTimeout(t._h); t._h = setTimeout(() => t.style.display = "none", 2600);
+}
+function framePath(eye, kind = "image") {
+  const m = state.scene.frames[state.frame];
+  if (kind === "image") return `/api/frame?frame=${state.frame}&eye=${eye}`;
+  return `/api/frame?frame=${state.frame}&eye=${eye}&kind=${kind}`;
+}
+const imgCache = {};
+function loadImg(src) {
+  // A failed load must not become an unhandled rejection: resolve to null and
+  // drop the cache entry so the next render can retry the URL.
+  if (!imgCache[src]) imgCache[src] = new Promise((res) => {
+    const im = new Image();
+    im.onload = () => res(im);
+    im.onerror = () => { delete imgCache[src]; res(null); };
+    im.src = src;
+  });
+  return imgCache[src];
+}
+
+async function refresh() {
+  const seq = ++refreshSeq;
+  const s = await api("/api/state");
+  if (seq !== refreshSeq) return;  // a newer refresh/action superseded this one
+  state.scene = s.scene; state.points = s.points; state.model = s.model;
+  state.approved = s.approved_snapshot; state.display = s.display;
+  $("frameSlider").max = s.scene.frame_count - 1;
+  await renderAll();
+  if (seq !== refreshSeq) return;
+  renderFit(); renderApproval();
+}
+
+function effectiveBox() {
+  const nw = state.scene.width, nh = state.scene.height;
+  const ar = nw / nh, sar = state.shownW / state.shownH;
+  let w, h;
+  if (sar > ar) { h = state.shownH; w = Math.round(h * ar); }
+  else { w = state.shownW; h = Math.round(w / ar); }
+  return { w, h, scale: w / nw, ox: (state.shownW - w) / 2, oy: (state.shownH - h) / 2 };
+}
+
+async function renderAll() {
+  const mode = $("viewMode").value;
+  const box = effectiveBox();
+  const cv = $("canvas");
+  cv.width = state.shownW; cv.height = state.shownH;
+  const ctx = cv.getContext("2d");
+  ctx.imageSmoothingEnabled = false;
+  ctx.fillStyle = "#0e1116"; ctx.fillRect(0, 0, cv.width, cv.height);
+  const draw = async (src, ox = box.ox, oy = box.oy) => {
+    const im = await loadImg(src);
+    if (im) ctx.drawImage(im, ox, oy, box.w, box.h);
+  };
+  if ($("showMasks").checked) {
+    await draw(framePath("left", $("maskKind").value));
+  } else if (mode === "left") {
+    await draw(framePath("left"));
+  } else if (mode === "right") {
+    await draw(framePath("right"));
+  } else if (mode === "side") {
+    const half = { ...box, w: Math.round(box.w / 2), scale: box.scale / 2 };
+    half.ox = box.ox; half.oy = box.oy;
+    const l = await loadImg(framePath("left")), r = await loadImg(framePath("right"));
+    if (l) ctx.drawImage(l, half.ox, half.oy, half.w, half.h);
+    if (r) ctx.drawImage(r, half.ox + half.w, half.oy, half.w, half.h);
+    drawPoints(ctx, half, "left");
+    drawPoints(ctx, { ...half, ox: half.ox + half.w }, "right");
+    updateHud(half); return;
+  } else if (mode === "overlay") {
+    const a = $("mix").value / 100;
+    const l = await loadImg(framePath("left")), r = await loadImg(framePath("right"));
+    ctx.globalAlpha = 1 - a; await draw(framePath("left"));
+    ctx.globalAlpha = a; if (r) ctx.drawImage(r, box.ox, box.oy, box.w, box.h);
+    ctx.globalAlpha = 1;
+  }
+  drawPoints(ctx, box, "both");
+  updateHud(box);
+}
+
+function drawPoints(ctx, box, which) {
+  const pts = state.points.filter(p => p.frame === state.frame);
+  const color = { ok: "#58c08a", low: "#e8a83c", conflict: "#e05a4e" };
+  pts.forEach((p, i) => {
+    const globalIdx = state.points.indexOf(p);
+    const mark = (pt, radius) => {
+      const x = box.ox + pt[0] * box.scale, y = box.oy + pt[1] * box.scale;
+      ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI * 2);
+      ctx.strokeStyle = color[p.status]; ctx.lineWidth = 1.5; ctx.stroke();
+      if (p.status !== "ok") {
+        ctx.beginPath(); ctx.moveTo(x - 3, y - 3); ctx.lineTo(x + 3, y + 3);
+        ctx.moveTo(x + 3, y - 3); ctx.lineTo(x - 3, y + 3); ctx.stroke();
+      }
+      ctx.fillStyle = color[p.status];
+      ctx.font = "10px sans-serif"; ctx.fillText(String(globalIdx), x + 5, y - 5);
+    };
+    if (which === "left" || which === "both") mark(p.left, 5);
+    if (which === "right" || which === "both") mark(p.right, 5);
+    if (which === "both") {
+      ctx.strokeStyle = color[p.status]; ctx.setLineDash([3, 3]);
+      ctx.beginPath();
+      ctx.moveTo(box.ox + p.left[0] * box.scale, box.oy + p.left[1] * box.scale);
+      ctx.lineTo(box.ox + p.right[0] * box.scale, box.oy + p.right[1] * box.scale);
+      ctx.stroke(); ctx.setLineDash([]);
+    }
+  });
+}
+
+function updateHud(box) {
+  const n = state.scene.frame_count;
+  $("frameText").textContent = `${state.frame} / ${n - 1}`;
+  $("frameSlider").value = state.frame;
+  const split = state.scene.shot_split;
+  $("shotLabel").textContent = state.frame < split ? "镜头 A（近水平）" : "镜头 B（真实垂直漂移+倾斜）";
+  const rows = state.points.filter(p => p.frame === state.frame);
+  $("pointRows").innerHTML = rows.map(p => {
+    const i = state.points.indexOf(p);
+    return `<tr class="${p.status}">
+      <td>${i}</td><td>${p.left[0].toFixed(1)},${p.left[1].toFixed(1)}</td>
+      <td>${p.right[0].toFixed(1)},${p.right[1].toFixed(1)}</td>
+      <td>${p.dx.toFixed(2)}</td><td>${p.dy.toFixed(2)}</td>
+      <td>${p.confidence.toFixed(2)}</td>
+      <td><button data-del="${i}">×</button></td></tr>
+      ${p.note ? `<tr class="${p.status}"><td></td><td colspan="6" class="blank-note">${p.note}</td></tr>` : ""}`;
+  }).join("") || `<tr><td colspan="7" class="muted">本帧尚无点</td></tr>`;
+  document.querySelectorAll("[data-del]").forEach(b => b.onclick = async () => {
+    await api("/api/point/delete", { index: +b.dataset.del }); refresh();
+  });
+  const ok = rows.filter(p => p.status === "ok").length;
+  const low = rows.filter(p => p.status === "low").length;
+  const conf = rows.filter(p => p.status === "conflict").length;
+  $("frameStats").innerHTML = rows.length
+    ? `<span>可信点</span><span>${ok}</span><span>低置信留空</span><span>${low}</span>
+       <span>冲突点</span><span>${conf}</span>` : "";
+}
+
+function renderFit() {
+  const el = $("fitInfo");
+  if (!state.model) { el.innerHTML = '<p class="muted">尚未拟合。</p>'; return; }
+  el.innerHTML = state.model.segments.map(s => {
+    const cls = s.accepted === true ? "accept" : s.accepted === false ? "reject" : "unknown";
+    const ci = s.ci_a ? `95% CI [${s.ci_a[0].toFixed(2)}, ${s.ci_a[1].toFixed(2)}] px` : "";
+    return `<div class="seg ${cls}">
+      <b>帧 ${s.start}–${s.end}</b>（${s.kind === "linear" ? "常数+倾斜 dy=a+b·x" : "常数 dy=a"}）
+      <div class="kv">
+        <span>a</span><span>${isFinite(s.a) ? s.a.toFixed(3) + " px" : "—"}</span>
+        <span>b</span><span>${s.b.toFixed(5)}</span>
+        <span>拟合点 / 留出点</span><span>${s.n_fit} / ${s.n_holdout}</span>
+        <span>留出 RMSE</span><span>${s.holdout_rmse !== null ? s.holdout_rmse.toFixed(2) + " px" : "—"}</span>
+        <span>95% 预测带</span><span>${s.pred_band !== null ? "±" + s.pred_band.toFixed(2) + " px" : "—"}</span>
+      </div>
+      <p class="muted">${ci} · ${s.decision || ""}</p>
+    </div>`;
+  }).join("");
+}
+
+function renderApproval() {
+  const has = !!state.model;
+  $("approve").disabled = !has || !!state.approved;
+  $("revoke").disabled = !state.approved;
+  const badge = $("approvalBadge");
+  if (state.approved) {
+    badge.textContent = `已批准：${state.approved.scope === "global" ? "全帧共用" : "按镜头"}`;
+    badge.className = "badge ok";
+  } else if (has) {
+    badge.textContent = "已拟合，待批准"; badge.className = "badge warn";
+  } else {
+    badge.textContent = "校正未拟合"; badge.className = "badge";
+  }
+  loadReportSummary();
+}
+
+async function loadReportSummary() {
+  const gen = reportGeneration;
+  try {
+    const r = await fetch("/api/report");
+    if (!r.ok) throw new Error();
+    const rep = await r.json();
+    if (rep.error) throw new Error();
+    if (gen !== reportGeneration) return;  // a newer rebuild superseded this
+    if (rep.status === "not_generated") {
+      $("reportBadge").textContent = "报告：未生成";
+      $("reportBadge").className = "badge";
+      $("reportStats").innerHTML = `<span class="muted">尚未生成</span>`;
+      return;
+    }
+    renderReportFromPayload(rep);
+  } catch {
+    if (gen !== reportGeneration) return;
+    $("reportBadge").textContent = "报告：未生成";
+    $("reportBadge").className = "badge";
+    $("reportStats").innerHTML = `<span class="muted">尚未生成</span>`;
+  }
+}
+
+// -- events ---------------------------------------------------------------
+$("canvas").addEventListener("click", async (e) => {
+  const rect = e.target.getBoundingClientRect();
+  const box = effectiveBox();
+  const sx = (e.clientX - rect.left) * (state.shownW / rect.width) - box.ox;
+  const sy = (e.clientY - rect.top) * (state.shownH / rect.height) - box.oy;
+  const nx = sx / box.scale, ny = sy / box.scale;
+  if (nx < 0 || ny < 0 || nx >= state.scene.width || ny >= state.scene.height) return;
+  await api("/api/point", { frame: state.frame, x: nx, y: ny, source: "manual" });
+  refresh();
+});
+$("prev").onclick = () => { state.frame = Math.max(0, state.frame - 1); renderAll(); };
+$("next").onclick = () => { state.frame = Math.min(state.scene.frame_count - 1, state.frame + 1); renderAll(); };
+$("frameSlider").oninput = e => { state.frame = +e.target.value; renderAll(); };
+$("play").onclick = () => {
+  if (state.playing) { clearInterval(state.playing); state.playing = null; $("play").textContent = "▶ 播放"; return; }
+  $("play").textContent = "⏸ 暂停";
+  state.playing = setInterval(() => {
+    state.frame = (state.frame + 1) % state.scene.frame_count; renderAll();
+  }, 350);
+};
+["viewMode", "mix", "showMasks", "maskKind"].forEach(id => $(id).oninput = renderAll);
+$("aspectMode").onchange = e => {
+  const v = e.target.value;
+  if (v === "native") { state.shownW = 480; state.shownH = 360; }
+  if (v === "wide") { state.shownW = 640; state.shownH = 360; }
+  if (v === "square") { state.shownW = 360; state.shownH = 360; }
+  renderAll();
+};
+$("autoGrid").onclick = async () => {
+  toast("正在整帧自动布点…");
+  const pts = state.points;
+  for (let y = 18; y < state.scene.height - 18; y += 48)
+    for (let x = 18; x < state.scene.width - 18; x += 48)
+      await api("/api/point", { frame: state.frame, x, y, source: "auto" });
+  refresh();
+};
+$("fit").onclick = async () => {
+  await api("/api/fit", { scope: $("scope").value });
+  refresh(); toast("拟合完成：每三个点留出一个做泛化验证");
+};
+$("approve").onclick = async () => { await api("/api/approve", { approved: true }); refresh(); };
+$("revoke").onclick = async () => { await api("/api/approve", { approved: false }); refresh(); };
+$("saveDisplay").onclick = async () => {
+  const body = { width_px: $("dW").value, height_px: $("dH").value,
+                 width_mm: $("dMM").value, viewing_distance_mm: $("dDist").value };
+  await api("/api/display", body);
+  if (body.width_px && body.height_px) { state.shownW = +body.width_px; state.shownH = +body.height_px; }
+  refresh(); toast("显示参数已保存，比例已按原片像素复算");
+};
+$("openConflict").onclick = () => window.open(
+  `/api/report-artifact?path=reports/f${String(state.frame).padStart(3, "0")}_conflict.png`, "_blank");
+$("openDisparity").onclick = () => window.open(
+  `/api/report-artifact?path=reports/f${String(state.frame).padStart(3, "0")}_disparity.png`, "_blank");
+$("buildReport").onclick = async () => {
+  const start = await fetch("/api/report/build", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+  }).then(r => r.json());
+  if (start.error) { toast(start.error); return; }
+  const runId = start.run_id;
+  const btn = $("buildReport"); btn.disabled = true;
+  const badge = $("reportBadge");
+  badge.textContent = "报告：重算中"; badge.className = "badge warn";
+  const tick = async () => {
+    const st = await (await fetch("/api/report/status")).json();
+    // Only the run we started can complete this workflow.
+    if (st.run_id === runId && st.done && !st.running) {
+      btn.disabled = false;
+      reportGeneration += 1;
+      if (st.status === "error") { toast("报告构建失败：" + st.error); return; }
+      const rep = await (await fetch("/api/report")).json();
+      if (rep.error) { toast(rep.error); return; }
+      if (rep.status === "blocked") { toast(rep.reason); }
+      else { toast("报告已按实际获准的变换重新计算"); }
+      renderReportFromPayload(rep);
+      return;
+    }
+    $("reportStats").innerHTML =
+      `<span>进度</span><span>${st.frame} / ${st.total} 帧</span>`;
+    // Clamp to 250ms so background/headless timer throttling cannot stall the
+    // poll for seconds; a visible tab always polls at least this fast.
+    setTimeout(tick, 250);
+  };
+  tick();
+};
+
+function renderReportFromPayload(rep) {
+  const badge = $("reportBadge");
+  if (rep.status === "ok") {
+    badge.textContent = "报告：已基于获准变换"; badge.className = "badge ok";
+    const a = rep.aggregate;
+    const ang = rep.frames?.[0]?.angular;
+    $("reportStats").innerHTML = `
+      <span>有效像素</span><span>${a.valid_pixels}</span>
+      <span>水平视差中位</span><span>${a.median_px.toFixed(2)} px</span>
+      <span>稳健范围 (P2–P98)</span><span>${a.robust_range_px.toFixed(2)} px</span>
+      <span>全范围</span><span>${a.min_px.toFixed(1)} → ${a.max_px.toFixed(1)} px</span>
+      <span>视角范围</span><span>${ang ? ang.robust_range_deg.toFixed(3) + "°" : "需显示尺寸与距离"}</span>`;
+  } else {
+    badge.textContent = "报告：等待批准"; badge.className = "badge warn";
+    $("reportStats").innerHTML = `<span class="muted">${rep.reason || ""}</span>`;
+  }
+}
+
+refresh();
+</script>
+</body>
+</html>

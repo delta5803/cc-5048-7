@@ -23,3 +23,6 @@ __pycache__/
 *.log
 .env
 .env.*
+
+# Temporary file from atomic review-session saves in the demo project.
+/output/footage/.session.json.*.tmp
